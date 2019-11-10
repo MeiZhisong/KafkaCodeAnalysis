@@ -46,9 +46,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Higher level consumer access to the network layer with basic support for request futures. This class
- * is thread-safe, but provides no synchronization for response callbacks. This guarantees that no locks
- * are held when they are invoked.
+ * 高等级的消费者，用来访问支持请求future的网络层。这个类是线程安全的，但是提供了响应回调的非同步机制。这保证了它们被调用时，是不持有锁的。
  */
 public class ConsumerNetworkClient implements Closeable {
     private static final int MAX_POLL_TIMEOUT_MS = 5000;
@@ -56,26 +54,28 @@ public class ConsumerNetworkClient implements Closeable {
     // the mutable state of this class is protected by the object's monitor (excluding the wakeup
     // flag and the request completion queue below).
     private final Logger log;
+    // NetworkClient对象
     private final KafkaClient client;
+    // 一个线程安全的帮助类，持有每个节点还没有发送的请求
     private final UnsentRequests unsent = new UnsentRequests();
+    // 用于管理Kafka集群的元数据
     private final Metadata metadata;
     private final Time time;
     private final long retryBackoffMs;
     private final int maxPollTimeoutMs;
     private final int requestTimeoutMs;
+    // 是否禁止唤醒
     private final AtomicBoolean wakeupDisabled = new AtomicBoolean();
 
-    // We do not need high throughput, so use a fair lock to try to avoid starvation
+    // 不需要高吞吐量，所以使用一个公平锁来避免线程饥饿。
     private final ReentrantLock lock = new ReentrantLock(true);
 
-    // when requests complete, they are transferred to this queue prior to invocation. The purpose
-    // is to avoid invoking them while holding this object's monitor which can open the door for deadlocks.
+    // 当请求完成的时候，它们被放到了这个队列里，避免了当它们持有对象锁被调用时而造成死锁的问题。
     private final ConcurrentLinkedQueue<RequestFutureCompletionHandler> pendingCompletion = new ConcurrentLinkedQueue<>();
 
     private final ConcurrentLinkedQueue<Node> pendingDisconnects = new ConcurrentLinkedQueue<>();
 
-    // this flag allows the client to be safely woken up without waiting on the lock above. It is
-    // atomic to avoid the need to acquire the lock above in order to enable it concurrently.
+    // 无锁情况下，能被安全唤醒。用来表示是否被唤醒。
     private final AtomicBoolean wakeup = new AtomicBoolean(false);
 
     public ConsumerNetworkClient(LogContext logContext,
@@ -90,6 +90,7 @@ public class ConsumerNetworkClient implements Closeable {
         this.metadata = metadata;
         this.time = time;
         this.retryBackoffMs = retryBackoffMs;
+        // 理论上最大的拉取时间不能超过5秒
         this.maxPollTimeoutMs = Math.min(maxPollTimeoutMs, MAX_POLL_TIMEOUT_MS);
         this.requestTimeoutMs = requestTimeoutMs;
     }
