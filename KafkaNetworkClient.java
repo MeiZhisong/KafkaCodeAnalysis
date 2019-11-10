@@ -255,11 +255,13 @@ public class ConsumerNetworkClient implements Closeable {
 
         lock.lock();
         try {
-            // Handle async disconnects prior to attempting any sends
+            // 处理企图断开连接的请求
             handlePendingDisconnects();
 
-            // send all the requests we can send now
+            // 将已经就绪的请求排队等候
             long pollDelayMs = trySend(now);
+            
+            // 计算拉取的超时时间
             timeout = Math.min(timeout, pollDelayMs);
 
             // check whether the poll is still needed by the caller. Note that if the expected completion
@@ -291,10 +293,10 @@ public class ConsumerNetworkClient implements Closeable {
             // cleared or a connect finished in the poll
             trySend(now);
 
-            // fail requests that couldn't be sent if they have expired
+            // 将失效请求的回调执行失败处理
             failExpiredRequests(now);
 
-            // clean unsent requests collection to keep the map from growing indefinitely
+            // 清理所有没有发送成功的请求
             unsent.clean();
         } finally {
             lock.unlock();
@@ -428,15 +430,19 @@ public class ConsumerNetworkClient implements Closeable {
         }
     }
 
+    // 处理企图断开连接的节点
     private void handlePendingDisconnects() {
         lock.lock();
         try {
             while (true) {
+                // 从企图断开连接的队列中拉取一个节点
                 Node node = pendingDisconnects.poll();
                 if (node == null)
                     break;
-
+                
+                // 将没有发送成功的请求的回调执行失败处理
                 failUnsentRequests(node, DisconnectException.INSTANCE);
+                // 断开连接
                 client.disconnect(node.idString());
             }
         } finally {
@@ -449,6 +455,7 @@ public class ConsumerNetworkClient implements Closeable {
         client.wakeup();
     }
 
+    // 将过期的请求的回调执行失败处理
     private void failExpiredRequests(long now) {
         // clear all expired unsent requests and fail their corresponding futures
         Collection<ClientRequest> expiredRequests = unsent.removeExpiredRequests(now);
@@ -457,7 +464,8 @@ public class ConsumerNetworkClient implements Closeable {
             handler.onFailure(new TimeoutException("Failed to send request after " + request.requestTimeoutMs() + " ms."));
         }
     }
-
+    
+    // 将没有发送成功的请求的回调执行失败处理
     private void failUnsentRequests(Node node, RuntimeException e) {
         // clear unsent requests to node and fail their corresponding futures
         lock.lock();
@@ -475,15 +483,18 @@ public class ConsumerNetworkClient implements Closeable {
     private long trySend(long now) {
         long pollDelayMs = Long.MAX_VALUE;
 
-        // send any requests that can be sent now
+        // 发送已经就绪的请求
         for (Node node : unsent.nodes()) {
             Iterator<ClientRequest> iterator = unsent.requestIterator(node);
             if (iterator.hasNext())
+                // 比较long的最大值与客户端配置的pollDelayMs，选取最小值作为pollDelayMs。
                 pollDelayMs = Math.min(pollDelayMs, client.pollDelayMs(node, now));
 
             while (iterator.hasNext()) {
                 ClientRequest request = iterator.next();
+                // 元数据请求不需要现在发送 && 连接服务端成功，并且能够发送请求
                 if (client.ready(node, now)) {
+                    // 将要发送的请求排队等候
                     client.send(request, now);
                     iterator.remove();
                 }
@@ -492,20 +503,24 @@ public class ConsumerNetworkClient implements Closeable {
         return pollDelayMs;
     }
 
+    // 没有开启禁止唤醒，并且设置了唤醒
     public void maybeTriggerWakeup() {
         if (!wakeupDisabled.get() && wakeup.get()) {
             log.debug("Raising WakeupException in response to user wakeup");
             wakeup.set(false);
+            // 直接抛出WakeupException，终止当前的poll操作
             throw new WakeupException();
         }
     }
 
+    //  检查线程是否被中断
     private void maybeThrowInterruptException() {
         if (Thread.interrupted()) {
             throw new InterruptException(new InterruptedException());
         }
     }
 
+    // 设置禁止唤醒
     public void disableWakeups() {
         wakeupDisabled.set(true);
     }
@@ -588,14 +603,18 @@ public class ConsumerNetworkClient implements Closeable {
             }
         }
 
+        // 回调的失败处理
         public void onFailure(RuntimeException e) {
             this.e = e;
+            // 在pendingCompletion中添加这个对象。表示这个请求已经完成了。
             pendingCompletion.add(this);
         }
 
+        // 回调的正常完成处理
         @Override
         public void onComplete(ClientResponse response) {
             this.response = response;
+            // 表示这个请求已经完成了。
             pendingCompletion.add(this);
         }
     }
@@ -662,20 +681,25 @@ public class ConsumerNetworkClient implements Closeable {
             return false;
         }
 
+        // 删除过期的请求
         private Collection<ClientRequest> removeExpiredRequests(long now) {
             List<ClientRequest> expiredRequests = new ArrayList<>();
             for (ConcurrentLinkedQueue<ClientRequest> requests : unsent.values()) {
                 Iterator<ClientRequest> requestIterator = requests.iterator();
                 while (requestIterator.hasNext()) {
                     ClientRequest request = requestIterator.next();
+                    // 执行时间
                     long elapsedMs = Math.max(0, now - request.createdTimeMs());
+                    // 如果执行时间大于设置的请求超时时间
                     if (elapsedMs > request.requestTimeoutMs()) {
+                        // 将其添加到过期请求列表中
                         expiredRequests.add(request);
                         requestIterator.remove();
                     } else
                         break;
                 }
             }
+            // 返回过期请求列表中
             return expiredRequests;
         }
 
