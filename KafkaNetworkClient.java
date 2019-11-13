@@ -251,6 +251,7 @@ public class ConsumerNetworkClient implements Closeable {
      */
     public void poll(long timeout, long now, PollCondition pollCondition, boolean disableWakeup) {
         // there may be handlers which need to be invoked if we woke up the previous call to poll
+        // 处理之前的拉取的回调处理
         firePendingCompletedRequests();
 
         lock.lock();
@@ -264,33 +265,39 @@ public class ConsumerNetworkClient implements Closeable {
             // 计算拉取的超时时间
             timeout = Math.min(timeout, pollDelayMs);
 
-            // check whether the poll is still needed by the caller. Note that if the expected completion
-            // condition becomes satisfied after the call to shouldBlock() (because of a fired completion
-            // handler), the client will be woken up.
+            // 如果完成队列中为空并且拉取条件为空或者应当阻塞
             if (pendingCompletion.isEmpty() && (pollCondition == null || pollCondition.shouldBlock())) {
                 // if there are no requests in flight, do not block longer than the retry backoff
+                // 如果单次flight的请求数量为0
                 if (client.inFlightRequestCount() == 0)
                     timeout = Math.min(timeout, retryBackoffMs);
+                // 有超时时间的阻塞等待（pollDalayMs,retryBackOffMs,maxPollTimeoutMs的最小值）
                 client.poll(Math.min(maxPollTimeoutMs, timeout), now);
                 now = time.milliseconds();
             } else {
+                // 立刻拉取，没有阻塞
                 client.poll(0, now);
             }
 
             // handle any disconnects by failing the active requests. note that disconnects must
             // be checked immediately following poll since any subsequent call to client.ready()
             // will reset the disconnect status
+            // 对待发送队列中的请求中断开连接的，作出处理
             checkDisconnects(now);
+            // 开启了唤醒
             if (!disableWakeup) {
                 // trigger wakeups after checking for disconnects so that the callbacks will be ready
                 // to be fired on the next call to poll()
+                // 如果设置了唤醒，则作出一些处理
                 maybeTriggerWakeup();
             }
             // throw InterruptException if this thread is interrupted
+            // 处理线程中断
             maybeThrowInterruptException();
 
             // try again to send requests since buffer space may have been
             // cleared or a connect finished in the poll
+            // 再次发送请求，因为buffer的空间可能清空了或者连接完成了
             trySend(now);
 
             // 将失效请求的回调执行失败处理
@@ -303,12 +310,14 @@ public class ConsumerNetworkClient implements Closeable {
         }
 
         // called without the lock to avoid deadlock potential if handlers need to acquire locks
+        // 请求完成后的回调处理
         firePendingCompletedRequests();
     }
 
     /**
      * Poll for network IO and return immediately. This will not trigger wakeups.
      */
+    // 立刻拉取消息并且返回。不会触发唤醒操作。
     public void pollNoWakeup() {
         poll(0, time.milliseconds(), null, true);
     }
@@ -393,34 +402,40 @@ public class ConsumerNetworkClient implements Closeable {
         }
     }
 
+    // 请求完成的回调处理
     private void firePendingCompletedRequests() {
         boolean completedRequestsFired = false;
         for (;;) {
             RequestFutureCompletionHandler completionHandler = pendingCompletion.poll();
             if (completionHandler == null)
                 break;
-
+            // 回调的成功处理
             completionHandler.fireCompletion();
             completedRequestsFired = true;
         }
 
         // wakeup the client in case it is blocking in poll for this future's completion
         if (completedRequestsFired)
+            // 唤醒等待的节点
             client.wakeup();
     }
 
+    // 检查待发送队列中的请求是否已经断开连接了，如果断开连接了，则回调做完成处理
     private void checkDisconnects(long now) {
         // any disconnects affecting requests that have already been transmitted will be handled
         // by NetworkClient, so we just need to check whether connections for any of the unsent
         // requests have been disconnected; if they have, then we complete the corresponding future
         // and set the disconnect flag in the ClientResponse
         for (Node node : unsent.nodes()) {
+            // 客户端连接节点失败
             if (client.connectionFailed(node)) {
                 // Remove entry before invoking request callback to avoid callbacks handling
                 // coordinator failures traversing the unsent list again.
+                // 将该节点从待发送队列中删除
                 Collection<ClientRequest> requests = unsent.remove(node);
                 for (ClientRequest request : requests) {
                     RequestFutureCompletionHandler handler = (RequestFutureCompletionHandler) request.callback();
+                    // SASL验证失败
                     AuthenticationException authenticationException = client.authenticationException(node);
                     handler.onComplete(new ClientResponse(request.makeHeader(request.requestBuilder().latestAllowedVersion()),
                             request.callback(), request.destination(), request.createdTimeMs(), now, true,
